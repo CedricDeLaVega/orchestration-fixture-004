@@ -1,0 +1,70 @@
+name: Fictitious authorization race
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  a:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    outputs:
+      receipt: ${{ steps.race.outputs.receipt }}
+    steps:
+      - id: race
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: A
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/contents/race.py?ref=$GITHUB_SHA" --jq .content | base64 --decode > "$RUNNER_TEMP/race.py"
+          python3 -B "$RUNNER_TEMP/race.py" claim
+  b:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    outputs:
+      receipt: ${{ steps.race.outputs.receipt }}
+    steps:
+      - id: race
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: B
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/contents/race.py?ref=$GITHUB_SHA" --jq .content | base64 --decode > "$RUNNER_TEMP/race.py"
+          python3 -B "$RUNNER_TEMP/race.py" claim
+  verify_and_disable:
+    if: always()
+    needs: [a, b]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Verify evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECEIPT_A: ${{ needs.a.outputs.receipt }}
+          RECEIPT_B: ${{ needs.b.outputs.receipt }}
+          STATUS_A: ${{ needs.a.result }}
+          STATUS_B: ${{ needs.b.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/contents/race.py?ref=$GITHUB_SHA" --jq .content | base64 --decode > "$RUNNER_TEMP/race.py"
+          python3 -B "$RUNNER_TEMP/race.py" verify
+      - name: Disable this workflow
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/actions/workflows/race.yml/disable"
