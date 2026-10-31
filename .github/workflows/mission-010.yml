@@ -1,0 +1,124 @@
+name: Role router fixture 010
+on:
+  issue_comment:
+    types: [created]
+permissions: {}
+concurrency:
+  group: role-router-010
+  cancel-in-progress: false
+jobs:
+  authorize:
+    if: >-
+      github.repository == 'CedricDeLaVega/orchestration-fixture-004' &&
+      github.actor == 'CedricDeLaVega' &&
+      github.event.issue.number == 5 &&
+      (github.event.comment.body == '/route-pm-once' ||
+       github.event.comment.body == '/route-infra-once') &&
+      github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    timeout-minutes: 2
+    outputs:
+      role: ${{ steps.role.outputs.role }}
+    steps:
+      - name: Authorize exact role and claim one-use marker
+        id: role
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMAND: ${{ github.event.comment.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$COMMAND" in
+            /route-pm-once) role=PM ;;
+            /route-infra-once) role=INFRA ;;
+            *) exit 1 ;;
+          esac
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref='refs/tags/orchestration-fixture-004/consumed/mission-010' \
+            -f sha="$GITHUB_SHA" --silent
+          echo "role=$role" >> "$GITHUB_OUTPUT"
+  ack:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    timeout-minutes: 2
+    steps:
+      - name: Publish receipt to source issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROLE: ${{ needs.authorize.outputs.role }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/5/comments" \
+            -f body="010 — ACK $ROLE — mission acceptée, exécution $GITHUB_RUN_ID. Agent simulé Codex, pas instance ChatGPT réelle." --silent
+  agent:
+    needs: [authorize, ack]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      message: ${{ steps.codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Simulated target role
+        id: codex
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: gpt-6-luna
+          effort: low
+          permission-profile: ':read-only'
+          prompt: |
+            Tu es un agent de TEST role ${{ needs.authorize.outputs.role }}.
+            Tu ne disposes ni des conversations FILCKO ni de droits sur
+            les dépôts ou l'infrastructure FILCKO. Ceci est une simulation.
+            Réponds en français, moins de 150 mots, sans outils ni mutations.
+            Le scénario fictif est un utilisateur iPhone qui crée un contact
+            puis ne le retrouve pas dans le planificateur de visite.
+            Si ton rôle est PM, propose deux critères de recette et
+            identifie les preuves non encore disponibles.
+            Si ton rôle est INFRA, propose deux contrôles non destructifs
+            de continuité et d'isolation, sans inventer de vérifications.
+            Signale clairement que la prise en charge du VRAI agent n'est
+            pas démontrée. Aucune décision stratégique ou GO.
+  publish:
+    needs: [authorize, agent]
+    if: needs.agent.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      issues: write
+    steps:
+      - name: Publish response
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROLE: ${{ needs.authorize.outputs.role }}
+          MESSAGE: ${{ needs.agent.outputs.message }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$MESSAGE" && ${#MESSAGE} -le 10000 ]]
+          {
+            printf '010 — ROUTED ROLE %s — RUN %s — NON EXÉCUTOIRE\n\n' "$ROLE" "$GITHUB_RUN_ID"
+            printf '%s\n' "$MESSAGE"
+          } > "$RUNNER_TEMP/role010.md"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/5/comments" \
+            -F "body=@$RUNNER_TEMP/role010.md" --silent
+  disable:
+    needs: [authorize, ack, agent, publish]
+    if: always() && needs.authorize.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Disable one-shot route
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/actions/workflows/mission-010.yml/disable"
