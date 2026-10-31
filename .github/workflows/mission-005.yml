@@ -1,0 +1,92 @@
+name: Codex fictitious single-shot mission 005
+on:
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: codex-fixture-005
+  cancel-in-progress: false
+jobs:
+  authorize:
+    if: github.actor == 'CedricDeLaVega' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: write
+    steps:
+      - name: Consume exactly one fictional authorization
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "CedricDeLaVega/orchestration-fixture-004" ]]
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
+          [[ "$GITHUB_RUN_ATTEMPT" == "1" ]]
+          [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$GITHUB_ACTOR" == "CedricDeLaVega" ]]
+          expected=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          [[ "$expected" == "$GITHUB_SHA" ]]
+          # 201 only. Any replay or duplicate claim fails closed before accessing the API secret.
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref='refs/tags/orchestration-fixture-004/consumed/mission-005' \
+            -f sha="$GITHUB_SHA" --silent
+  codex:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    permissions:
+      contents: read
+    outputs:
+      message: ${{ steps.agent.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Run one fictional Codex task
+        id: agent
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: gpt-6-luna
+          effort: low
+          permission-profile: ':read-only'
+          prompt: |
+            This is a deliberately fictional, inexpensive workflow test.
+            Do not inspect files, run shell commands, use tools, or call external services.
+            Respond in French, at most 50 words.
+            Fictional tasks: ALPHA (write a short outline), BETA (publish it), GAMMA (archive it).
+            Return ONLY two sentences: first state the correct order; second identify
+            which task depends on ALPHA. No real-world advice or extra work.
+  publish:
+    needs: [authorize, codex]
+    if: needs.authorize.result == 'success' && needs.codex.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      issues: write
+    steps:
+      - name: Post a single result to fictional issue 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MESSAGE: ${{ needs.codex.outputs.message }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$MESSAGE" ]]
+          [[ "${#MESSAGE}" -le 2000 ]]
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/1/comments" \
+            -f body="MISSION 005 — Résultat automatique (essai fictif, run $GITHUB_RUN_ID):"$'\n\n'"$MESSAGE" --silent
+  disable:
+    if: always()
+    needs: [authorize, codex, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Disable this workflow even if agent or publisher fails
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/actions/workflows/mission-005.yml/disable"
